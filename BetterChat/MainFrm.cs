@@ -1,18 +1,15 @@
-﻿using HAlerts;
-using Sulakore.Communication;
-using Sulakore.Habbo;
-using Sulakore.Modules;
-using Sulakore.Protocol;
-using System;
-using System.Collections.Generic;
-using System.ComponentModel;
-using System.Data;
-using System.Drawing;
-using System.Linq;
-using System.Text;
+﻿using System.Collections.Generic;
 using System.Threading.Tasks;
-using System.Windows.Forms;
+using System.Linq;
+using System;
+
+using Sulakore.Communication;
+using Sulakore.Modules;
+using Sulakore.Habbo;
+
 using Tangine;
+
+using HAlerts;
 
 namespace BetterChat
 {
@@ -20,23 +17,38 @@ namespace BetterChat
     [Author("Mika", HabboName = "M-ka", Hotel = HHotel.Nl, ResourceName = "Twitter", ResourceUrl = "https://www.twitter.com/Metoniem")]
     public partial class MainFrm : ExtensionForm
     {
-        [MessageId("3ed1b2efef33a502709fdf49436f3e37")]
-        public ushort HabboAlert { get; set; }
-        [MessageId("4cd9a988356735f867f5c2080c8521ef")]
-        public ushort TriggerEvent { get; set; }
+        public const string EXIT_ICON_URL = "http://habboo-a.akamaihd.net/c_images/album1584/UK369.gif";
+
+        private const string USER_TIP_MSG = "You can close the BetterChat module using the following command:\n\n:closebc";
+        private const string CLOSED_MSG = "BetterChat has been closed!";
 
         public override bool IsRemoteModule => true;
 
-        public List<BasicUser> FriendList { get; set; }
-        public List<(int UserId, string Message)> PendingAlerts { get; set; }
+        [MessageId("3ed1b2efef33a502709fdf49436f3e37")]
+        public ushort HabboAlert { get; set; }
 
-        public const string EXIT_ICON_URL = "http://habboo-a.akamaihd.net/c_images/album1584/UK369.gif";
+        [MessageId("4cd9a988356735f867f5c2080c8521ef")]
+        public ushort TriggerEvent { get; set; }
+
+        private List<(int UserId, string Message)> _pendingMessages;
+        private Dictionary<int, BasicUser> _friends;
 
         public MainFrm()
         {
             InitializeComponent();
-            FriendList = new List<BasicUser>();
-            PendingAlerts = new List<(int UserId, string Message)>();
+
+            Shown += OnFormShown;
+
+            _friends = new Dictionary<int, BasicUser>();
+            _pendingMessages = new List<(int userId, string message)>();
+        }
+
+        private async void OnFormShown(object sender, EventArgs e)
+        {
+            await Connection.SendToClientAsync(TriggerEvent, 
+                HabboEvents.ShowHelpBubble(HUIControl.CHAT_INPUT, USER_TIP_MSG));
+
+            Hide();
         }
 
         [InDataCapture("UserProfile")]
@@ -46,17 +58,14 @@ namespace BetterChat
 
             BasicUser user = new BasicUser(e.Packet.ReadInteger(), e.Packet.ReadString(), e.Packet.ReadString());
 
-            if (!FriendList.Any(f => f.Id == user.Id))
-                FriendList.Add(user);
-
-            var pendingMessages = PendingAlerts.FindAll(f => f.UserId == user.Id);
-
-            foreach (var pendingMessage in pendingMessages)
+            if (!_friends.ContainsKey(user.Id))
+                _friends.Add(user.Id, user);
+            
+            foreach (var message in _pendingMessages.Where(m => m.UserId == user.Id))
             {
-                await SendAlert(user, pendingMessage.Message);
-                PendingAlerts.Remove(pendingMessage);
+                await SendAlertAsync(user, message.Message);
+                _pendingMessages.Remove(message);
             }
-
         }
 
         [InDataCapture("feb75b1e16f6f03dada3e349b81cfa25")]
@@ -64,18 +73,15 @@ namespace BetterChat
         {
             e.Continue();
 
-            int id = e.Packet.ReadInteger();
+            var id = e.Packet.ReadInteger();
             string message = e.Packet.ReadString();
 
-            BasicUser user = FriendList.Find(f => f.Id == id);
-
-            if (user != null)
-                await SendAlert(user, message);
-            else
+            if (!_friends.TryGetValue(id, out var user))
             {
-                PendingAlerts.Add((id, message));
+                _pendingMessages.Add((id, message));
                 await Connection.SendToServerAsync(Out.RequestUserProfile, id, false);
             }
+            else await SendAlertAsync(user, message);
         }
 
         [OutDataCapture("RoomUserTalk")]
@@ -86,27 +92,20 @@ namespace BetterChat
             if (e.Packet.ReadString().ToLower() == ":closebc")
             {
                 e.IsBlocked = true;
-                HAlert alert = HAlertBuilder.CreateAlert(HAlertType.Bubble, "BetterChat has been closed!").ImageUrl(EXIT_ICON_URL);
+                HAlert alert = HAlertBuilder.CreateAlert(HAlertType.Bubble, CLOSED_MSG).ImageUrl(EXIT_ICON_URL);
                 await Connection.SendToClientAsync(alert.ToPacket(HabboAlert));
 
                 Close();
             }
         }
 
-        public async Task SendAlert(BasicUser user, string message)
+        public async Task SendAlertAsync(BasicUser user, string message)
         {
             HAlert alert = HAlertBuilder.CreateAlert(HAlertType.Bubble, $"{user.Username} said:\n\n{message}")
                 .EventUrl(HabboEvents.ShowPlayerChat(user.Id))
                 .ImageUrl(HabboLook.GetImagingUrl(user.Figure, Hotel));
 
             await Connection.SendToClientAsync(alert.ToPacket(HabboAlert));
-        }
-
-        private async void MainFrm_Load(object sender, EventArgs e)
-        {
-            await Connection.SendToClientAsync(TriggerEvent, HabboEvents.ShowHelpBubble(HUIControl.CHAT_INPUT, "You can close the BetterChat module using the following command:\n\n:closebc"));
-            await Task.Delay(1000);
-            Hide();
         }
     }
 }
